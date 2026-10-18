@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tiny-gpt"
+version = "0.1.0"
+description = "GPT-2 implemented from scratch in PyTorch, verified against OpenAI's weights."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "einops>=0.7",
+    "jaxtyping>=0.2.25",
+]
+
+[project.optional-dependencies]
+pretrained = ["transformers>=4.40"]
+train = ["transformers>=4.40", "datasets>=2.18", "numpy", "tqdm", "wandb"]
+dev = ["pytest>=8", "transformers>=4.40", "numpy", "tqdm"]
+
+[project.scripts]
+tiny-gpt-sample = "tiny_gpt.sample:main"
+tiny-gpt-train = "tiny_gpt.train:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tiny_gpt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
