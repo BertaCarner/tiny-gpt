@@ -6,7 +6,7 @@ import torch as t
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from tiny_gpt.model import GPT
+from tiny_gpt.model import GPT, KVCache
 
 
 def sample_next_token(
@@ -42,17 +42,31 @@ def generate(
     top_p: float | None = None,
     stop_token: int | None = None,
     seed: int | None = None,
+    use_cache: bool = True,
 ) -> Int[Tensor, "new_posn"]:
-    """Extend `tokens` one token at a time. Without a KV cache, each step reruns the whole sequence."""
+    """Extend `tokens` one token at a time.
+
+    With `use_cache`, the prompt is processed once and each later step only runs the newest token through
+    the model. Without it, each step reruns the whole sequence. Both give identical outputs.
+    """
     generator = None
     if seed is not None:
         generator = t.Generator(device=tokens.device).manual_seed(seed)
     model.eval()
+    n_ctx = model.cfg.n_ctx
+    cache = KVCache.empty(model.cfg) if use_cache else None
+    new_input = tokens
     for _ in range(max_new_tokens):
-        context = tokens[-model.cfg.n_ctx :].unsqueeze(0)
-        logits = model(context)[0, -1]
+        if cache is None:
+            logits = model(tokens[-n_ctx:].unsqueeze(0))[0, -1]
+        else:
+            if cache.seq_len + len(new_input) > n_ctx:
+                # Context window full: positions can't shift inside a cache, so rebuild it over the latest n_ctx tokens.
+                cache, new_input = KVCache.empty(model.cfg), tokens[-n_ctx:]
+            logits = model(new_input.unsqueeze(0), cache)[0, -1]
         next_token = sample_next_token(logits, temperature, top_k, top_p, generator)
         tokens = t.cat([tokens, t.tensor([next_token], device=tokens.device)])
+        new_input = tokens[-1:]
         if next_token == stop_token:
             break
     return tokens

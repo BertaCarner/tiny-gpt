@@ -7,6 +7,7 @@ embeddings, GELU MLP), so OpenAI's pretrained weights can be loaded into it.
 """
 
 import math
+from dataclasses import dataclass
 
 import einops
 import torch as t
@@ -19,6 +20,40 @@ from tiny_gpt.config import GPTConfig
 def gelu_new(x: Tensor) -> Tensor:
     """The tanh approximation of GELU that GPT-2 was trained with."""
     return 0.5 * x * (1.0 + t.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x.pow(3))))
+
+
+@dataclass
+class LayerCache:
+    """Keys and values for every position seen so far, for one attention layer."""
+
+    k: Float[Tensor, "batch posn n_heads d_head"] | None = None
+    v: Float[Tensor, "batch posn n_heads d_head"] | None = None
+
+
+class KVCache:
+    """Per-layer keys and values from earlier positions.
+
+    Without a cache, generating each new token reruns the model over the whole
+    sequence. Keys and values of earlier positions never change (attention is
+    causal), so they can be stored and each new token processed on its own.
+    The cache is filled in place by `GPT.forward`.
+    """
+
+    def __init__(self, layers: list[LayerCache]):
+        self.layers = layers
+
+    @classmethod
+    def empty(cls, cfg: GPTConfig) -> "KVCache":
+        return cls([LayerCache() for _ in range(cfg.n_layers)])
+
+    @property
+    def seq_len(self) -> int:
+        k = self.layers[0].k
+        return 0 if k is None else k.shape[1]
+
+    def select(self, batch_idx: Int[Tensor, "new_batch"]) -> "KVCache":
+        """A new cache keeping only (or repeating) the given batch rows, e.g. the surviving beams in beam search."""
+        return KVCache([LayerCache(layer.k[batch_idx], layer.v[batch_idx]) for layer in self.layers])
 
 
 class LayerNorm(nn.Module):
@@ -51,9 +86,10 @@ class PosEmbed(nn.Module):
         self.W_pos = nn.Parameter(t.empty((cfg.n_ctx, cfg.d_model)))
         nn.init.normal_(self.W_pos, std=cfg.init_range)
 
-    def forward(self, tokens: Int[Tensor, "batch posn"]) -> Float[Tensor, "batch posn d_model"]:
+    def forward(self, tokens: Int[Tensor, "batch posn"], offset: int = 0) -> Float[Tensor, "batch posn d_model"]:
+        """`offset` is the position of the first token, which is non-zero when continuing from a KV cache."""
         batch, seq_len = tokens.shape
-        return einops.repeat(self.W_pos[:seq_len], "posn d_model -> batch posn d_model", batch=batch)
+        return einops.repeat(self.W_pos[offset : offset + seq_len], "posn d_model -> batch posn d_model", batch=batch)
 
 
 class Attention(nn.Module):
@@ -75,7 +111,9 @@ class Attention(nn.Module):
         # Not persistent: it's a constant, so it stays out of saved checkpoints.
         self.register_buffer("IGNORE", t.tensor(float("-inf")), persistent=False)
 
-    def forward(self, normalized_resid_pre: Float[Tensor, "batch posn d_model"]) -> Float[Tensor, "batch posn d_model"]:
+    def forward(
+        self, normalized_resid_pre: Float[Tensor, "batch posn d_model"], layer_cache: LayerCache | None = None
+    ) -> Float[Tensor, "batch posn d_model"]:
         # Queries, keys and values for every head
         q = einops.einsum(
             normalized_resid_pre, self.W_Q,
@@ -89,6 +127,13 @@ class Attention(nn.Module):
             normalized_resid_pre, self.W_V,
             "batch posn d_model, n_heads d_model d_head -> batch posn n_heads d_head",
         ) + self.b_V
+
+        # With a cache, the new queries also attend to the stored keys and values of earlier positions
+        if layer_cache is not None:
+            if layer_cache.k is not None:
+                k = t.cat([layer_cache.k, k], dim=1)
+                v = t.cat([layer_cache.v, v], dim=1)
+            layer_cache.k, layer_cache.v = k, v
 
         # Scores between every query and every key, then scale, mask and softmax
         attn_scores = einops.einsum(
@@ -114,8 +159,11 @@ class Attention(nn.Module):
         self, attn_scores: Float[Tensor, "batch n_heads query_pos key_pos"]
     ) -> Float[Tensor, "batch n_heads query_pos key_pos"]:
         """Stops each position from attending to positions after it."""
-        all_ones = t.ones(attn_scores.size(-2), attn_scores.size(-1), device=attn_scores.device)
-        future = t.triu(all_ones, diagonal=1).bool()
+        query_len, key_len = attn_scores.shape[-2:]
+        all_ones = t.ones(query_len, key_len, device=attn_scores.device)
+        # Queries are the last `query_len` positions (fewer than the keys when continuing from a cache),
+        # so query i sits at position key_len - query_len + i and may see keys up to there.
+        future = t.triu(all_ones, diagonal=key_len - query_len + 1).bool()
         return attn_scores.masked_fill(future, self.IGNORE)
 
 
@@ -149,8 +197,10 @@ class TransformerBlock(nn.Module):
         self.ln2 = LayerNorm(cfg)
         self.mlp = MLP(cfg)
 
-    def forward(self, resid_pre: Float[Tensor, "batch posn d_model"]) -> Float[Tensor, "batch posn d_model"]:
-        resid_mid = self.attn(self.ln1(resid_pre)) + resid_pre
+    def forward(
+        self, resid_pre: Float[Tensor, "batch posn d_model"], layer_cache: LayerCache | None = None
+    ) -> Float[Tensor, "batch posn d_model"]:
+        resid_mid = self.attn(self.ln1(resid_pre), layer_cache) + resid_pre
         return self.mlp(self.ln2(resid_mid)) + resid_mid
 
 
@@ -179,10 +229,14 @@ class GPT(nn.Module):
         self.ln_final = LayerNorm(cfg)
         self.unembed = Unembed(cfg)
 
-    def forward(self, tokens: Int[Tensor, "batch posn"]) -> Float[Tensor, "batch posn d_vocab"]:
-        residual = self.embed(tokens) + self.pos_embed(tokens)
-        for block in self.blocks:
-            residual = block(residual)
+    def forward(self, tokens: Int[Tensor, "batch posn"], cache: KVCache | None = None) -> Float[Tensor, "batch posn d_vocab"]:
+        """With `cache`, `tokens` are the positions after those already cached, and the cache is extended in place."""
+        offset = 0 if cache is None else cache.seq_len
+        if offset + tokens.shape[1] > self.cfg.n_ctx:
+            raise ValueError(f"{offset + tokens.shape[1]} positions exceed the context window of {self.cfg.n_ctx}")
+        residual = self.embed(tokens) + self.pos_embed(tokens, offset)
+        for layer, block in enumerate(self.blocks):
+            residual = block(residual, None if cache is None else cache.layers[layer])
         return self.unembed(self.ln_final(residual))
 
 

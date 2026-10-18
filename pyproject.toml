@@ -18,6 +18,7 @@ dependencies = [
 pretrained = ["transformers>=4.40"]
 train = ["transformers>=4.40", "datasets>=2.18", "numpy", "tqdm", "wandb"]
 dev = ["pytest>=8", "transformers>=4.40", "numpy", "tqdm"]
+bench = ["matplotlib"]
 
 [project.scripts]
 tiny-gpt-sample = "tiny_gpt.sample:main"

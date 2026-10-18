@@ -1,0 +1,28 @@
+{
+  "preset": "gpt2-small",
+  "prompt_len": 32,
+  "hardware": "CPU (Intel64 Family 6 Model 142 Stepping 12, GenuineIntel, 4 threads)",
+  "torch": "2.14.0+cpu",
+  "results": [
+    {
+      "new_tokens": 32,
+      "seconds_cached": 2.018769500000417,
+      "seconds_uncached": 6.955217700000048
+    },
+    {
+      "new_tokens": 64,
+      "seconds_cached": 3.837847199999942,
+      "seconds_uncached": 15.274511900000107
+    },
+    {
+      "new_tokens": 128,
+      "seconds_cached": 7.745690300000206,
+      "seconds_uncached": 45.92431000000033
+    },
+    {
+      "new_tokens": 256,
+      "seconds_cached": 16.603095199999643,
+      "seconds_uncached": 129.46764389999998
+    }
+  ]
+}

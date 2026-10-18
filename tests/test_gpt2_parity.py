@@ -27,9 +27,10 @@ def test_logits_match_hugging_face(models):
     t.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
-def test_greedy_generation_matches_hugging_face(models):
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_greedy_generation_matches_hugging_face(models, use_cache):
     ours, hf_model, tokenizer = models
     prompt = t.tensor(tokenizer.encode("Machine learning is"))
     expected = hf_model.generate(prompt.unsqueeze(0), max_new_tokens=15, do_sample=False, pad_token_id=50256)[0]
-    actual = generate(ours, prompt, max_new_tokens=15, temperature=0.0)
+    actual = generate(ours, prompt, max_new_tokens=15, temperature=0.0, use_cache=use_cache)
     assert tokenizer.decode(actual) == tokenizer.decode(expected)
