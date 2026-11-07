@@ -110,6 +110,8 @@ class Attention(nn.Module):
             nn.init.normal_(W, std=cfg.init_range)
         # Not persistent: it's a constant, so it stays out of saved checkpoints.
         self.register_buffer("IGNORE", t.tensor(float("-inf")), persistent=False)
+        # Does nothing, but a forward hook on it can read the attention pattern (see induction.py).
+        self.hook_pattern = nn.Identity()
 
     def forward(
         self, normalized_resid_pre: Float[Tensor, "batch posn d_model"], layer_cache: LayerCache | None = None
@@ -141,7 +143,7 @@ class Attention(nn.Module):
             "batch posn_Q n_heads d_head, batch posn_K n_heads d_head -> batch n_heads posn_Q posn_K",
         )
         attn_scores_masked = self.apply_causal_mask(attn_scores / self.cfg.d_head**0.5)
-        attn_pattern = attn_scores_masked.softmax(-1)
+        attn_pattern = self.hook_pattern(attn_scores_masked.softmax(-1))
 
         # Weighted sum of value vectors
         z = einops.einsum(

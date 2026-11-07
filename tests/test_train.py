@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import torch as t
 
@@ -33,6 +35,16 @@ def test_checkpoint_round_trip(tmp_path):
     final_snapshot = load_checkpoint(tmp_path / "snapshots" / "step_000005.pt")
     t.testing.assert_close(final_snapshot(tokens[:4].long()), model(tokens[:4].long()))
     assert (tmp_path / "snapshots" / "step_000002.pt").exists()
+
+
+def test_induction_metrics_are_logged_during_training(tmp_path):
+    tokens = counting_sequences(64)
+    args = TrainArgs(batch_size=8, max_steps=6, eval_every=6, eval_batches=1, out_dir=str(tmp_path),
+                     snapshot_steps="", induction_every=2, induction_seqs=4)
+    train(CFG, args, tokens, tokens[:8])
+    rows = [json.loads(line) for line in (tmp_path / "induction.jsonl").read_text().splitlines()]
+    assert [r["step"] for r in rows] == [2, 4, 6]
+    assert {"induction/random_loss_second", "induction/text_loss_second", "induction_score/0.3"} <= rows[0].keys()
 
 
 def test_learning_rate_warms_up_then_decays_to_min():

@@ -4,9 +4,11 @@
 """
 
 import argparse
+import json
 import math
 import time
 from dataclasses import asdict, dataclass, fields
+from pathlib import Path
 
 import torch as t
 from jaxtyping import Int
@@ -15,6 +17,7 @@ from tqdm.auto import tqdm
 
 from tiny_gpt.checkpoint import save_checkpoint
 from tiny_gpt.config import PRESETS, GPTConfig
+from tiny_gpt.induction import common_tokens, induction_metrics, random_repeated_tokens, repeat_with_bos
 from tiny_gpt.model import GPT, next_token_log_probs
 from tiny_gpt.sample import generate
 
@@ -35,6 +38,9 @@ class TrainArgs:
     out_dir: str = "checkpoints"
     # Extra copies kept for studying how the model changes during training (dense early, when induction heads form).
     snapshot_steps: str = "50,100,200,300,400,500,750,1000,1500,2000,3000,5000"
+    # Measure induction heads (see induction.py) every this many steps; 0 turns it off. Cheap: two small batches.
+    induction_every: int = 50
+    induction_seqs: int = 16
     wandb_project: str | None = None
     wandb_name: str | None = None
 
@@ -102,6 +108,17 @@ def train(
     tokens_per_step = args.batch_size * train_tokens.shape[1]
     snapshot_steps = {int(s) for s in args.snapshot_steps.split(",") if s.strip()}
 
+    if args.induction_every:
+        # The same sequences at every measurement, so changes come from the model, not the data.
+        bos = tokenizer.eos_token_id if tokenizer is not None else 0
+        seq_len = (cfg.n_ctx - 1) // 2
+        vocab = common_tokens(train_tokens[:10_000], cfg.d_vocab)
+        induction_random = random_repeated_tokens(vocab, seq_len, args.induction_seqs, bos, args.seed)
+        induction_text = repeat_with_bos(eval_tokens[: args.induction_seqs, :seq_len], bos)
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+        induction_log = Path(args.out_dir) / "induction.jsonl"
+        induction_log.write_text("")
+
     run = None
     if args.wandb_project:
         import wandb
@@ -143,10 +160,18 @@ def train(
         metrics = {"train_loss": loss.item(), "lr": lr, "grad_norm": grad_norm.item()}
         progress.set_postfix(loss=f"{metrics['train_loss']:.3f}")
 
+        if args.induction_every and (step + 1) % args.induction_every == 0:
+            induction = induction_metrics(model, induction_random, induction_text)
+            metrics.update(induction)
+            with induction_log.open("a") as f:
+                f.write(json.dumps({"step": step + 1, "train_loss": metrics["train_loss"], **induction}) + "\n")
+
         if (step + 1) % args.eval_every == 0 or step + 1 == args.max_steps:
             metrics["tokens_per_sec"] = interval_steps * tokens_per_step / (time.perf_counter() - interval_start)
             metrics.update(evaluate(model, eval_tokens, args.batch_size, amp_dtype))
             line = f"step {step + 1}: eval_loss {metrics['eval_loss']:.3f}, eval_accuracy {metrics['eval_accuracy']:.3f}"
+            if "induction/max_induction_score" in metrics:
+                line += f", max induction score {metrics['induction/max_induction_score']:.2f}"
             if tokenizer is not None:
                 prompt = t.tensor(tokenizer.encode(args.eval_prompt), device=device)
                 story = tokenizer.decode(
