@@ -48,6 +48,33 @@ Without a cache, generating each token reruns the model over the whole sequence 
 
 GPT-2 small (124M), 32-token prompt, greedy decoding, on a laptop CPU (Intel Core, 4 threads). Reproduce with `python benchmarks/kv_cache.py`; raw numbers in [`docs/kv_cache_benchmark.json`](docs/kv_cache_benchmark.json).
 
+## Training on TinyStories
+
+The `tiny` preset (4 layers, 4 heads, `d_model` 256, 256-token context) trained from scratch on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories): 5,000 steps of 32 × 256 tokens (41M tokens), in 21 minutes on a free Kaggle T4. It has 29M parameters, but only 3M of them are in the transformer blocks; the rest are the token embedding and unembedding of GPT-2's 50,257-token vocabulary.
+
+![Training and held-out loss](docs/training_loss.png)
+
+| Step | Held-out loss | Next-token accuracy |
+|---:|---:|---:|
+| 500 | 2.97 | 40.7% |
+| 1,000 | 2.57 | 45.6% |
+| 2,000 | 2.26 | 49.9% |
+| 3,000 | 2.10 | 52.2% |
+| 4,000 | 1.99 | 54.0% |
+| 5,000 | 1.95 | 54.8% |
+
+Held-out loss is measured on 5,000 stories from the validation split. Train and held-out loss stay together because the run sees less than one pass over the 68M training tokens, so there is nothing to overfit to yet.
+
+Stories generated from "Once upon a time" (temperature 0.7, top-p 0.95, 80 tokens) during the run:
+
+> **Step 500:** Once upon a time there was a little girl named Lily. One day, she went to the park and saw her doll on her doll. Her mommy was sad because she didn't want to find the toy. Lily told her that her mommy said Lily, "Lily, I want to play outside." Lily said, "Mommy, I'm sorry I'm sorry," said. Lily was happy and said
+
+> **Step 5,000:** Once upon a time there was a little girl called Sally. She was three years old and loved to explore the world around her. One day, Sally found a big, green tree with lots of red, yellow, green fruit. She was so excited to try it out and reach the tree.
+>
+> Suddenly, she heard a voice. It said, "Be careful, Sally. You can't reach the tree and
+
+At step 500 the model has the vocabulary and the shape of a story but loses track of who is doing what; by step 5,000 it keeps a character, a setting and a small plot going. Every logged sample is in [`docs/training_history.json`](docs/training_history.json), along with the full loss history; the chart is made by `python scripts/plot_training.py <wandb run path>`.
+
 ## Quick start
 
 ```bash
@@ -80,9 +107,9 @@ logits = model(t.randint(0, 50257, (2, 64)))    # (batch, position, vocab)
 
 - [x] From-scratch GPT-2, verified against OpenAI's weights
 - [x] Sampling: greedy, temperature, top-k, top-p
-- [ ] Train a small model on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), with loss curves and sample outputs
+- [x] Train a small model on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), with loss curves and sample outputs
 - [x] KV cache, with a generation-speed benchmark
-- [ ] Beam search
+- [ ] Induction heads: when they form during training, using the saved snapshots
 - [ ] Scaling experiment: how loss changes with model width and depth
 - [ ] Trained model on the Hugging Face Hub, with a Gradio demo
 
