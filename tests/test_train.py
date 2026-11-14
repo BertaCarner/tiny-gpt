@@ -47,6 +47,13 @@ def test_induction_metrics_are_logged_during_training(tmp_path):
     assert {"induction/random_loss_second", "induction/text_loss_second", "induction_score/0.3"} <= rows[0].keys()
 
 
+def test_training_with_repeated_rows_runs(tmp_path):
+    tokens = counting_sequences(64)
+    args = TrainArgs(batch_size=8, max_steps=3, eval_every=3, eval_batches=1, out_dir=str(tmp_path),
+                     snapshot_steps="", repeat_fraction=0.25)
+    train(CFG, args, tokens, tokens[:8])
+
+
 def test_learning_rate_warms_up_then_decays_to_min():
     args = TrainArgs(lr=1e-3, min_lr=1e-4, warmup_steps=10, max_steps=100)
     assert learning_rate(0, args) == 1e-4

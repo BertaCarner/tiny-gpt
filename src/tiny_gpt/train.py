@@ -17,7 +17,13 @@ from tqdm.auto import tqdm
 
 from tiny_gpt.checkpoint import save_checkpoint
 from tiny_gpt.config import PRESETS, GPTConfig
-from tiny_gpt.induction import common_tokens, induction_metrics, random_repeated_tokens, repeat_with_bos
+from tiny_gpt.induction import (
+    common_tokens,
+    induction_metrics,
+    random_repeated_tokens,
+    repeat_with_bos,
+    repeated_training_rows,
+)
 from tiny_gpt.model import GPT, next_token_log_probs
 from tiny_gpt.sample import generate
 
@@ -41,6 +47,9 @@ class TrainArgs:
     # Measure induction heads (see induction.py) every this many steps; 0 turns it off. Cheap: two small batches.
     induction_every: int = 50
     induction_seqs: int = 16
+    # Fraction of each batch replaced by random token sequences repeated over and over (see
+    # induction.repeated_training_rows), which rewards copying from context. 0 trains on stories only.
+    repeat_fraction: float = 0.0
     wandb_project: str | None = None
     wandb_name: str | None = None
 
@@ -108,11 +117,14 @@ def train(
     tokens_per_step = args.batch_size * train_tokens.shape[1]
     snapshot_steps = {int(s) for s in args.snapshot_steps.split(",") if s.strip()}
 
+    bos = tokenizer.eos_token_id if tokenizer is not None else 0
+    vocab = common_tokens(train_tokens[:10_000], cfg.d_vocab)
+    n_repeat_rows = round(args.repeat_fraction * args.batch_size)
+    repeat_generator = t.Generator().manual_seed(args.seed + 1)  # separate, so the story batches stay the same
+
     if args.induction_every:
         # The same sequences at every measurement, so changes come from the model, not the data.
-        bos = tokenizer.eos_token_id if tokenizer is not None else 0
         seq_len = (cfg.n_ctx - 1) // 2
-        vocab = common_tokens(train_tokens[:10_000], cfg.d_vocab)
         induction_random = random_repeated_tokens(vocab, seq_len, args.induction_seqs, bos, args.seed)
         induction_text = repeat_with_bos(eval_tokens[: args.induction_seqs, :seq_len], bos)
         Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -131,6 +143,7 @@ def train(
                 **asdict(cfg),
                 "n_params": sum(p.numel() for p in model.parameters()),
                 "train_tokens_available": train_tokens.numel(),
+                "repeat_rows_per_batch": n_repeat_rows,
                 "device": t.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
             },
         )
@@ -145,6 +158,8 @@ def train(
 
         batch_idx = t.randint(0, len(train_tokens), (args.batch_size,), generator=batch_generator)
         tokens = train_tokens[batch_idx].to(device, non_blocking=True).long()
+        if n_repeat_rows:
+            tokens[:n_repeat_rows] = repeated_training_rows(vocab, n_repeat_rows, cfg.n_ctx, bos, repeat_generator)
         with t.autocast(device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
             logits = model(tokens)
         loss = -next_token_log_probs(logits.float(), tokens).mean()

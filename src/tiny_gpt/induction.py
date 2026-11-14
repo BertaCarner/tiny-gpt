@@ -37,6 +37,24 @@ def random_repeated_tokens(
     return repeat_with_bos(vocab.cpu()[idx], bos)
 
 
+def repeated_training_rows(
+    vocab: Int[Tensor, "k"], n_rows: int, n_ctx: int, bos: int, generator: t.Generator, min_period: int = 10
+) -> Int[Tensor, "n_rows n_ctx"]:
+    """Training rows `[BOS] X X X ...`: random common tokens repeated to fill the context.
+
+    Each row repeats with its own random period, so the repeats can only be predicted by copying by content
+    (find the earlier copy of the current token, predict what followed it), not by a fixed position offset.
+    """
+    max_period = (n_ctx - 1) // 2
+    min_period = min(min_period, max_period)  # tiny test models have short contexts
+    rows = []
+    for _ in range(n_rows):
+        period = int(t.randint(min_period, max_period + 1, (1,), generator=generator))
+        x = vocab.cpu()[t.randint(0, len(vocab), (period,), generator=generator)]
+        rows.append(t.cat([t.tensor([bos]), x.repeat(n_ctx // period + 1)])[:n_ctx])
+    return t.stack(rows)
+
+
 def induction_scores(
     pattern: Float[Tensor, "batch layer head posn_Q posn_K"], seq_len: int
 ) -> Float[Tensor, "layer head"]:

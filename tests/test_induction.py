@@ -6,6 +6,7 @@ from tiny_gpt.induction import (
     induction_scores,
     previous_token_scores,
     random_repeated_tokens,
+    repeated_training_rows,
     run_with_patterns,
 )
 from tiny_gpt.model import GPT
@@ -20,6 +21,21 @@ def test_random_repeated_tokens_is_bos_then_two_copies():
     assert (tokens[:, 0] == 0).all()
     assert t.equal(tokens[:, 1:7], tokens[:, 7:])
     assert t.isin(tokens[:, 1:], vocab).all()
+
+
+def test_repeated_training_rows_repeat_with_varied_periods():
+    vocab = t.arange(50, 100)
+    rows = repeated_training_rows(vocab, n_rows=20, n_ctx=64, bos=0, generator=t.Generator().manual_seed(0))
+    assert rows.shape == (20, 64)
+    assert (rows[:, 0] == 0).all() and t.isin(rows[:, 1:], vocab).all()
+    periods = set()
+    for row in rows[:, 1:]:
+        # The smallest shift that maps the row onto itself; random tokens could make it smaller than the
+        # period actually drawn only by an unlikely coincidence.
+        period = next(p for p in range(1, 64) if t.equal(row[p:], row[:-p]))
+        assert 10 <= period <= 31
+        periods.add(period)
+    assert len(periods) > 5  # not one fixed offset the model could learn by position alone
 
 
 def test_common_tokens_ranks_by_frequency():

@@ -114,15 +114,21 @@ class Attention(nn.Module):
         self.hook_pattern = nn.Identity()
 
     def forward(
-        self, normalized_resid_pre: Float[Tensor, "batch posn d_model"], layer_cache: LayerCache | None = None
+        self,
+        normalized_resid_pre: Float[Tensor, "batch posn d_model"],
+        layer_cache: LayerCache | None = None,
+        pos_embed: Float[Tensor, "batch posn d_model"] | None = None,
     ) -> Float[Tensor, "batch posn d_model"]:
+        # Shortformer: positions only help decide where to attend (queries and keys), never what is moved (values)
+        qk_input = normalized_resid_pre if pos_embed is None else normalized_resid_pre + pos_embed
+
         # Queries, keys and values for every head
         q = einops.einsum(
-            normalized_resid_pre, self.W_Q,
+            qk_input, self.W_Q,
             "batch posn d_model, n_heads d_model d_head -> batch posn n_heads d_head",
         ) + self.b_Q
         k = einops.einsum(
-            normalized_resid_pre, self.W_K,
+            qk_input, self.W_K,
             "batch posn d_model, n_heads d_model d_head -> batch posn n_heads d_head",
         ) + self.b_K
         v = einops.einsum(
@@ -200,9 +206,12 @@ class TransformerBlock(nn.Module):
         self.mlp = MLP(cfg)
 
     def forward(
-        self, resid_pre: Float[Tensor, "batch posn d_model"], layer_cache: LayerCache | None = None
+        self,
+        resid_pre: Float[Tensor, "batch posn d_model"],
+        layer_cache: LayerCache | None = None,
+        pos_embed: Float[Tensor, "batch posn d_model"] | None = None,
     ) -> Float[Tensor, "batch posn d_model"]:
-        resid_mid = self.attn(self.ln1(resid_pre), layer_cache) + resid_pre
+        resid_mid = self.attn(self.ln1(resid_pre), layer_cache, pos_embed) + resid_pre
         return self.mlp(self.ln2(resid_mid)) + resid_mid
 
 
@@ -224,6 +233,8 @@ class Unembed(nn.Module):
 class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
+        if cfg.positional_embedding not in ("standard", "shortformer"):
+            raise ValueError(f"Unknown positional_embedding {cfg.positional_embedding!r}")
         self.cfg = cfg
         self.embed = Embed(cfg)
         self.pos_embed = PosEmbed(cfg)
@@ -236,9 +247,14 @@ class GPT(nn.Module):
         offset = 0 if cache is None else cache.seq_len
         if offset + tokens.shape[1] > self.cfg.n_ctx:
             raise ValueError(f"{offset + tokens.shape[1]} positions exceed the context window of {self.cfg.n_ctx}")
-        residual = self.embed(tokens) + self.pos_embed(tokens, offset)
+        pos_embed = self.pos_embed(tokens, offset)
+        if self.cfg.positional_embedding == "shortformer":
+            # Positions stay out of the residual stream and are given to every attention layer's queries and keys.
+            residual, block_pos_embed = self.embed(tokens), pos_embed
+        else:
+            residual, block_pos_embed = self.embed(tokens) + pos_embed, None
         for layer, block in enumerate(self.blocks):
-            residual = block(residual, None if cache is None else cache.layers[layer])
+            residual = block(residual, None if cache is None else cache.layers[layer], block_pos_embed)
         return self.unembed(self.ln_final(residual))
 
 
