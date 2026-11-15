@@ -22,6 +22,7 @@ from tiny_gpt.induction import (
     induction_metrics,
     random_repeated_tokens,
     repeat_with_bos,
+    repeated_story_rows,
     repeated_training_rows,
 )
 from tiny_gpt.model import GPT, next_token_log_probs
@@ -47,9 +48,12 @@ class TrainArgs:
     # Measure induction heads (see induction.py) every this many steps; 0 turns it off. Cheap: two small batches.
     induction_every: int = 50
     induction_seqs: int = 16
-    # Fraction of each batch replaced by random token sequences repeated over and over (see
-    # induction.repeated_training_rows), which rewards copying from context. 0 trains on stories only.
+    # Fraction of each batch replaced by sequences repeated over and over, which rewards copying from context.
+    # 0 trains on stories only.
     repeat_fraction: float = 0.0
+    # What gets repeated: "random" common tokens (induction.repeated_training_rows) or "story" fragments of the
+    # training stories (induction.repeated_story_rows).
+    repeat_source: str = "random"
     wandb_project: str | None = None
     wandb_name: str | None = None
 
@@ -120,6 +124,8 @@ def train(
     bos = tokenizer.eos_token_id if tokenizer is not None else 0
     vocab = common_tokens(train_tokens[:10_000], cfg.d_vocab)
     n_repeat_rows = round(args.repeat_fraction * args.batch_size)
+    if args.repeat_source not in ("random", "story"):
+        raise ValueError(f"Unknown repeat_source {args.repeat_source!r}")
     repeat_generator = t.Generator().manual_seed(args.seed + 1)  # separate, so the story batches stay the same
 
     if args.induction_every:
@@ -159,7 +165,11 @@ def train(
         batch_idx = t.randint(0, len(train_tokens), (args.batch_size,), generator=batch_generator)
         tokens = train_tokens[batch_idx].to(device, non_blocking=True).long()
         if n_repeat_rows:
-            tokens[:n_repeat_rows] = repeated_training_rows(vocab, n_repeat_rows, cfg.n_ctx, bos, repeat_generator)
+            if args.repeat_source == "story":
+                repeated = repeated_story_rows(train_tokens, n_repeat_rows, cfg.n_ctx, bos, repeat_generator)
+            else:
+                repeated = repeated_training_rows(vocab, n_repeat_rows, cfg.n_ctx, bos, repeat_generator)
+            tokens[:n_repeat_rows] = repeated
         with t.autocast(device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
             logits = model(tokens)
         loss = -next_token_log_probs(logits.float(), tokens).mean()

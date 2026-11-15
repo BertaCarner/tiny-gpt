@@ -6,6 +6,7 @@ from tiny_gpt.induction import (
     induction_scores,
     previous_token_scores,
     random_repeated_tokens,
+    repeated_story_rows,
     repeated_training_rows,
     run_with_patterns,
 )
@@ -36,6 +37,19 @@ def test_repeated_training_rows_repeat_with_varied_periods():
         assert 10 <= period <= 31
         periods.add(period)
     assert len(periods) > 5  # not one fixed offset the model could learn by position alone
+
+
+def test_repeated_story_rows_repeat_a_fragment_of_one_story():
+    stories = t.arange(10 * 64).reshape(10, 64)  # every token is distinct, so a fragment shows where it came from
+    rows = repeated_story_rows(stories, n_rows=20, n_ctx=64, bos=-1, generator=t.Generator().manual_seed(0))
+    assert rows.shape == (20, 64) and (rows[:, 0] == -1).all()
+    for row in rows[:, 1:]:
+        period = next(p for p in range(1, 64) if t.equal(row[p:], row[:-p]))
+        assert 10 <= period <= 31
+        fragment = row[:period]
+        # Consecutive tokens of a single story
+        assert t.equal(fragment, t.arange(fragment[0], fragment[0] + period))
+        assert fragment[0] // 64 == fragment[-1] // 64
 
 
 def test_common_tokens_ranks_by_frequency():

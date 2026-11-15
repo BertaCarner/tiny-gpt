@@ -37,6 +37,15 @@ def random_repeated_tokens(
     return repeat_with_bos(vocab.cpu()[idx], bos)
 
 
+def _period_range(n_ctx: int, min_period: int) -> tuple[int, int]:
+    max_period = (n_ctx - 1) // 2
+    return min(min_period, max_period), max_period  # tiny test models have short contexts
+
+
+def _repeat_to_fill(x: Int[Tensor, "period"], n_ctx: int, bos: int) -> Int[Tensor, "n_ctx"]:
+    return t.cat([t.tensor([bos]), x.repeat(n_ctx // len(x) + 1)])[:n_ctx]
+
+
 def repeated_training_rows(
     vocab: Int[Tensor, "k"], n_rows: int, n_ctx: int, bos: int, generator: t.Generator, min_period: int = 10
 ) -> Int[Tensor, "n_rows n_ctx"]:
@@ -45,13 +54,31 @@ def repeated_training_rows(
     Each row repeats with its own random period, so the repeats can only be predicted by copying by content
     (find the earlier copy of the current token, predict what followed it), not by a fixed position offset.
     """
-    max_period = (n_ctx - 1) // 2
-    min_period = min(min_period, max_period)  # tiny test models have short contexts
+    min_period, max_period = _period_range(n_ctx, min_period)
     rows = []
     for _ in range(n_rows):
         period = int(t.randint(min_period, max_period + 1, (1,), generator=generator))
         x = vocab.cpu()[t.randint(0, len(vocab), (period,), generator=generator)]
-        rows.append(t.cat([t.tensor([bos]), x.repeat(n_ctx // period + 1)])[:n_ctx])
+        rows.append(_repeat_to_fill(x, n_ctx, bos))
+    return t.stack(rows)
+
+
+def repeated_story_rows(
+    stories: Int[Tensor, "n_seqs seq_len"], n_rows: int, n_ctx: int, bos: int, generator: t.Generator,
+    min_period: int = 10,
+) -> Int[Tensor, "n_rows n_ctx"]:
+    """Like `repeated_training_rows`, but X is a random fragment of a real story instead of random tokens.
+
+    Copying is then practised on text that reads like the stories themselves, so a head that learns it has a
+    reason to keep working on ordinary story text, not only on random-looking sequences.
+    """
+    min_period, max_period = _period_range(n_ctx, min_period)
+    rows = []
+    for _ in range(n_rows):
+        period = int(t.randint(min_period, max_period + 1, (1,), generator=generator))
+        row = int(t.randint(0, len(stories), (1,), generator=generator))
+        start = int(t.randint(0, stories.shape[1] - period + 1, (1,), generator=generator))
+        rows.append(_repeat_to_fill(stories[row, start : start + period].cpu().long(), n_ctx, bos))
     return t.stack(rows)
 
 

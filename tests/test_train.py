@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import torch as t
 
 from tiny_gpt.checkpoint import load_checkpoint
@@ -47,10 +48,11 @@ def test_induction_metrics_are_logged_during_training(tmp_path):
     assert {"induction/random_loss_second", "induction/text_loss_second", "induction_score/0.3"} <= rows[0].keys()
 
 
-def test_training_with_repeated_rows_runs(tmp_path):
+@pytest.mark.parametrize("source", ["random", "story"])
+def test_training_with_repeated_rows_runs(tmp_path, source):
     tokens = counting_sequences(64)
     args = TrainArgs(batch_size=8, max_steps=3, eval_every=3, eval_batches=1, out_dir=str(tmp_path),
-                     snapshot_steps="", repeat_fraction=0.25)
+                     snapshot_steps="", repeat_fraction=0.25, repeat_source=source)
     train(CFG, args, tokens, tokens[:8])
 
 
