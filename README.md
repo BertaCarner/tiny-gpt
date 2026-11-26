@@ -223,17 +223,8 @@ from tiny_gpt import GPT, PRESETS
 
 model = GPT(PRESETS["tiny"])                    # randomly initialised, ready to train
 logits = model(t.randint(0, 50257, (2, 64)))    # (batch, position, vocab)
-```
+``
 
-## Roadmap
-
-- [x] From-scratch GPT-2, verified against OpenAI's weights
-- [x] Sampling: greedy, temperature, top-k, top-p
-- [x] Train a small model on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), with loss curves and sample outputs
-- [x] KV cache, with a generation-speed benchmark
-- [x] Induction heads: whether and when they form, the circuit behind them, and where the model uses them
-- [x] Repeat real story fragments instead of random tokens: the head learned that way is used on stories
-- [ ] Look for induction heads forming from stories alone at a larger scale (more layers, longer training)
 
 ## Acknowledgements
 
